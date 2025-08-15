@@ -1,0 +1,14 @@
+# Para a Interface Gráfica e Lógica
+PyQt6
+# cython
+
+# Para o Processamento de IA
+# numpy
+# opencv-contrib-python
+# ultralytics
+# torch
+# torchvision
+# torchaudio
+
+# Para empacotar a aplicação
+pyinstaller
