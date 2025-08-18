@@ -1,145 +1,163 @@
-# Core/ai_processing_script.py
+# Core/processing_script.py
 
 import cv2
 import numpy as np
 import json
 from pathlib import Path
-from ultralytics import YOLO
-from typing import List, Dict, Any, Tuple, Generator, Optional
-from tqdm import tqdm # <--- ADICIONADO AQUI
+from tqdm import tqdm
+from typing import List, Dict, Any, Optional, Generator, Tuple
 
-# Nota: A função 'cv2.ximgproc.thinning' requer a instalação do pacote opencv-contrib.
-# Instale com: pip install opencv-contrib-python
+# --- Novas importações para o ONNX ---
+import torch
+import onnxruntime as ort
+from torchvision.ops import nms
 
-def apply_clahe_grayscale(img: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)) -> np.ndarray:
-    if img.ndim == 3:
-        gray_channel = img[:, :, 0]
-    else:
-        gray_channel = img
+# --- LISTA DE CLASSES (AJUSTE PARA O SEU MODELO) ---
+MY_CLASSES = ['fc3', 'courodejacare']
 
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    clahe_channel = clahe.apply(gray_channel)
-    img_clahe_3_channel = cv2.merge([clahe_channel, clahe_channel, clahe_channel])
-    return img_clahe_3_channel
+# ==============================================================================
+# CLASSE DE INFERÊNCIA ONNX (CÓDIGO QUE VOCÊ FORNECEU)
+# ==============================================================================
+class YOLOSegmentationONNX:
+    """
+    Classe para realizar inferência com um modelo de SEGMENTAÇÃO YOLO exportado como ONNX.
+    """
+    def __init__(self, model_path: str, classes: List[str], input_size: tuple = (640, 640),
+                 conf_threshold: float = 0.4, nms_threshold: float = 0.5):
+        self.input_size = input_size
+        self.conf_threshold = conf_threshold
+        self.nms_threshold = nms_threshold
+        self.classes = classes
+        self.num_classes = len(classes)
+        self.session = self._create_inference_session(model_path)
+        model_outputs = self.session.get_outputs()
+        self.output_names = [output.name for output in model_outputs]
+        self.output_shape_det = model_outputs[0].shape
+        self.num_mask_coeffs = self.output_shape_det[1] - self.num_classes - 4
 
+    def _create_inference_session(self, model_path: str) -> ort.InferenceSession:
+        try:
+            sess = ort.InferenceSession(model_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            print(f"ONNX: Usando dispositivo: {sess.get_providers()[0]}")
+            return sess
+        except Exception as e:
+            raise RuntimeError(f"Erro ao criar sessão ONNX: {e}")
+
+    def _preprocess(self, image: np.ndarray) -> (np.ndarray, float, tuple):
+        original_h, original_w = image.shape[:2]
+        scale = min(self.input_size[0] / original_h, self.input_size[1] / original_w)
+        new_h, new_w = int(original_h * scale), int(original_w * scale)
+        resized_image = cv2.resize(image, (new_w, new_h))
+        padded_image = np.full((self.input_size[0], self.input_size[1], 3), 114, dtype=np.uint8)
+        padded_image[:new_h, :new_w] = resized_image
+        image_tensor = cv2.cvtColor(padded_image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        image_tensor = np.transpose(image_tensor, (2, 0, 1))
+        return np.expand_dims(image_tensor, axis=0), scale, (original_h, original_w)
+
+    def _postprocess(self, outputs: List[np.ndarray], scale: float, orig_shape: tuple) -> List[Dict]:
+        detections_output = outputs[0][0]
+        mask_prototypes = outputs[1][0]
+        predictions = np.transpose(detections_output)
+        boxes_raw, scores, class_ids, mask_coeffs = predictions[:, :4], np.max(predictions[:, 4:4+self.num_classes], axis=1), np.argmax(predictions[:, 4:4+self.num_classes], axis=1), predictions[:, 4+self.num_classes:]
+        mask_conf = scores > self.conf_threshold
+        if not np.any(mask_conf): return []
+        boxes, scores, class_ids, mask_coeffs = boxes_raw[mask_conf], scores[mask_conf], class_ids[mask_conf], mask_coeffs[mask_conf]
+        x_c, y_c, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        boxes_torch = torch.from_numpy(np.stack([x_c - w / 2, y_c - h / 2, x_c + w / 2, y_c + h / 2], axis=1))
+        indices = nms(boxes_torch, torch.from_numpy(scores), self.nms_threshold)
+        final_detections = []
+        for i in indices:
+            mask = self.process_mask(mask_prototypes, mask_coeffs[i], boxes_torch[i], orig_shape, scale)
+            final_detections.append({
+                'box': (boxes_torch[i].numpy() / scale).astype(int), 'score': scores[i],
+                'class_id': class_ids[i], 'class_name': self.classes[class_ids[i]], 'mask': mask
+            })
+        return final_detections
+
+    def process_mask(self, prototypes: np.ndarray, mask_coeffs: np.ndarray, box: torch.Tensor, orig_shape: tuple, scale: float) -> np.ndarray:
+        c, mh, mw = prototypes.shape
+        mask = (mask_coeffs.reshape(1, -1) @ prototypes.reshape(c, -1)).reshape(mh, mw)
+        mask = 1 / (1 + np.exp(-mask))
+        orig_h, orig_w = orig_shape
+        x1, y1, x2, y2 = (box.numpy() / scale).astype(int)
+        mask_resized = cv2.resize(mask, (orig_w, orig_h))
+        final_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+        final_mask[y1:y2, x1:x2] = mask_resized[y1:y2, x1:x2] > 0.5
+        return final_mask
+
+    def predict(self, image: np.ndarray) -> List[Dict]:
+        input_tensor, scale, orig_shape = self._preprocess(image)
+        outputs = self.session.run(self.output_names, {self.session.get_inputs()[0].name: input_tensor})
+        return self._postprocess(outputs, scale, orig_shape)
+
+# ==============================================================================
+# CLASSE ORQUESTRADORA (LÓGICA DE FATIAMENTO DO SEU GITHUB)
+# ==============================================================================
 class AIImageProcessor:
     """
-    Classe principal para encapsular a lógica de análise de imagem com IA.
-    Esta classe será compilada com Cython.
+    Mantém a lógica de fatiamento, mas usa o YOLOSegmentationONNX para inferência.
     """
-    def __init__(self,
-                 model_path: str,
-                 output_folder: str,
-                 device: str = 'cpu',
-                 batch_size: int = 1,
-                 slice_height: int = 1024,
-                 slice_width: int = 1024):
-        """Inicializa o processador de IA."""
-        self.output_path = Path(output_folder) / 'analysis_results.json'
-        self.device = device
-        self.batch_size = batch_size
+    def __init__(self, model_path: str, input_folder: str, output_folder: str, 
+                 slice_height: int = 640, slice_width: int = 640):
+        self.input_folder = Path(input_folder)
+        self.output_folder = Path(output_folder)
+        self.output_json_path = self.output_folder / 'analysis_results_onnx.json'
         self.slice_height = slice_height
         self.slice_width = slice_width
-        self.model = self._load_model(model_path)
-        print(f"Modelo YOLO carregado. Device: '{self.device}'.")
 
-    def _load_model(self, model_path: str) -> YOLO:
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Arquivo do modelo não encontrado: {model_path}")
-        return YOLO(model_path)
+        # --- MUDANÇA PRINCIPAL: Carrega o modelo ONNX em vez do Ultralytics ---
+        self.model = YOLOSegmentationONNX(model_path=model_path, classes=MY_CLASSES)
 
-    def _create_slices_from_image(self, large_image: np.ndarray) -> Generator[Tuple[np.ndarray, Tuple[int, int], Tuple[int, int]], None, None]:
-        img_h, img_w, _ = large_image.shape
-        for r_idx, y in enumerate(range(0, img_h, self.slice_height)):
-            for c_idx, x in enumerate(range(0, img_w, self.slice_width)):
-                yield large_image[y:y + self.slice_height, x:x + self.slice_width], (r_idx, c_idx), (y, x)
+    def _create_slices(self, image: np.ndarray) -> Generator[Tuple[np.ndarray, Tuple[int, int]], None, None]:
+        img_h, img_w, _ = image.shape
+        for y in range(0, img_h, self.slice_height):
+            for x in range(0, img_w, self.slice_width):
+                yield image[y:y + self.slice_height, x:x + self.slice_width], (y, x)
 
-    @staticmethod
-    def _simplify_mask_to_polygon(mask_np: np.ndarray, tolerance: float = 1.5) -> List[List[int]]:
-        contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours: return []
-        main_contour = max(contours, key=cv2.contourArea)
-        simplified_contour = cv2.approxPolyDP(main_contour, tolerance, True)
-        return simplified_contour.squeeze().tolist() if simplified_contour.size > 0 else []
-
-    @staticmethod
-    def _calculate_direction(mask_tensor: np.ndarray, image_shape: tuple, box_coords: list) -> Optional[str]:
-        h, w = image_shape
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask = (255 * mask_tensor.cpu().numpy()).clip(0, 255).astype(np.uint8)
-        x1, y1, x2, y2 = map(int, box_coords)
-        subimage = mask[y1:y2, x1:x2]
-        if subimage.size == 0: return None
-        thinned = cv2.ximgproc.thinning(cv2.morphologyEx(subimage, cv2.MORPH_OPEN, kernel))
-        ys, xs = np.nonzero(thinned)
-        if len(xs) > 1 and len(ys) > 1:
-            return 'Horizontal' if (np.max(xs) - np.min(xs)) > (np.max(ys) - np.min(ys)) else 'Vertical'
-        return None
-
-    def _process_single_result(self, result: Any, slice_index: Tuple[int, int], slice_origin: Tuple[int, int]) -> List[Dict[str, Any]]:
-        output_objects = []
-        if not (result.boxes and result.masks): return output_objects
-        offset_y, offset_x = slice_origin
-        for box, mask_tensor, cls_tensor in zip(result.boxes, result.masks.data, result.boxes.cls):
-            class_id, local_bbox = int(cls_tensor.item()), box.xyxy[0].tolist()
-            global_bbox = [local_bbox[0] + offset_x, local_bbox[1] + offset_y, local_bbox[2] + offset_x, local_bbox[3] + offset_y]
-            full_mask_np = (255 * mask_tensor.cpu().numpy()).clip(0, 255).astype(np.uint8)
-            local_polygon = self._simplify_mask_to_polygon(full_mask_np, 1.2)
-            detection_info = {
-                "class": class_id,
-                "slice_index": f"({slice_index[0]}, {slice_index[1]})",
-                "global_bbox": global_bbox,
-                "global_polygon": [[pt[0] + offset_x, pt[1] + offset_y] for pt in local_polygon],
-                "area": int(np.count_nonzero(full_mask_np)) if class_id == 1 else None,
-                "direction": self._calculate_direction(mask_tensor, result.orig_shape, local_bbox) if class_id == 0 else None
-            }
-            output_objects.append(detection_info)
-        return output_objects
-
-    def run_analysis(self, image_dir: str):
+    def run_analysis(self):
         """
-        Método principal que executa a análise em um diretório de imagens.
-        Este método será chamado pelo worker.
+        Executa a análise em todas as imagens grandes do diretório, fatiando-as.
         """
-        image_path = Path(image_dir)
-        if not image_path.is_dir():
-            raise FileNotFoundError(f"O diretório de entrada não foi encontrado: {image_dir}")
-
-        image_files = list(image_path.glob('*.[jp][pn]g')) + list(image_path.glob('*.jpeg'))
+        image_files = list(self.input_folder.glob('*.[jp][pn]g')) + list(self.input_folder.glob('*.jpeg'))
         if not image_files:
-            print("Nenhuma imagem encontrada no diretório.")
+            print("Nenhuma imagem encontrada.")
             return
 
         all_results = {}
-        # --- MUDANÇA AQUI: Adicionado tqdm para a barra de progresso ---
-        for img_file in tqdm(image_files, desc="Analisando Imagens com IA", unit="img"):
+        for img_path in tqdm(image_files, desc="Processando Imagens Grandes", unit="img"):
             try:
-                large_image_np = cv2.imread(str(img_file))
-                if large_image_np is None: continue
+                large_image = cv2.imread(str(img_path))
+                if large_image is None: continue
 
-                large_image_clahe = apply_clahe_grayscale(large_image_np)
-                slices_generator = self._create_slices_from_image(large_image_clahe)
-                all_slices_meta = list(slices_generator)
                 detections_for_this_image = []
+                slices_generator = self._create_slices(large_image)
 
-                for i in range(0, len(all_slices_meta), self.batch_size):
-                    batch_meta = all_slices_meta[i:i + self.batch_size]
-                    batch_slices_np = [meta[0] for meta in batch_meta]
-                    if not batch_slices_np: continue
+                for slice_np, (offset_y, offset_x) in slices_generator:
+                    # --- MUDANÇA NA INFERÊNCIA ---
+                    # A predição é feita em cada fatia
+                    slice_detections = self.model.predict(slice_np)
 
-                    results_list = self.model.predict(batch_slices_np, verbose=False, device=self.device)
+                    # Mapeia as coordenadas das detecções de volta para a imagem original
+                    for det in slice_detections:
+                        box = det['box']
+                        global_box = [box[0] + offset_x, box[1] + offset_y, box[2] + offset_x, box[3] + offset_y]
+                        
+                        detections_for_this_image.append({
+                            'class_name': det['class_name'],
+                            'score': det['score'],
+                            'global_box': global_box,
+                            'mask_area_on_slice': int(np.sum(det['mask']))
+                        })
+                
+                all_results[img_path.name] = detections_for_this_image
 
-                    for result, meta in zip(results_list, batch_meta):
-                        detections_for_this_image.extend(self._process_single_result(result, meta[1], meta[2]))
-
-                all_results[img_file.name] = detections_for_this_image
             except Exception as e:
-                print(f"Erro ao processar a imagem {img_file.name}: {e}")
-
+                print(f"\nErro ao processar a imagem {img_path.name}: {e}")
+        
         self._save_to_json(all_results)
 
     def _save_to_json(self, data: Dict):
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.output_path, 'w', encoding='utf-8') as f:
+        self.output_folder.mkdir(parents=True, exist_ok=True)
+        with open(self.output_json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"Resultados da análise salvos em: {self.output_path}")
+        print(f"\nResultados salvos com sucesso em: {self.output_json_path}")

@@ -1,14 +1,16 @@
+# requirements.txt
+
 # Para a Interface Gráfica e Lógica
 PyQt6
-# cython
+cython
 
-# Para o Processamento de IA
-# numpy
-# opencv-contrib-python
-# ultralytics
-# torch
-# torchvision
-# torchaudio
+# Para o Processamento de IA com ONNX
+numpy
+opencv-contrib-python
+onnxruntime-gpu  # Ou onnxruntime para usar apenas CPU
+torch            # Necessário para a operação NMS
+torchvision      # Necessário para a operação NMS
+tqdm
 
-# Para empacotar a aplicação
+# Para empacotar
 pyinstaller
