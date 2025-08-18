@@ -14,7 +14,7 @@ class MainWidget(QtW.QWidget):
         # --- Widgets de Input ---
         self.input_label = QtW.QLabel("Pasta de Origem:")
         self.select_input_button = QtW.QPushButton("Selecionar Pasta de Origem")
-        self.input_path_edit = QtW.QLineEdit()
+        self.input_path_edit = QtW.QLineEdit('/mnt/ssd3/output_20m_teste_clahe')
         self.input_path_edit.setReadOnly(True)
         
         self.layout().addWidget(self.input_label)
@@ -24,7 +24,7 @@ class MainWidget(QtW.QWidget):
         # --- Widgets de Output ---
         self.output_label = QtW.QLabel("Pasta de Saída:")
         self.select_output_button = QtW.QPushButton("Selecionar Pasta de Saída")
-        self.output_path_edit = QtW.QLineEdit()
+        self.output_path_edit = QtW.QLineEdit('/home/servidor/Deletar_VICTOR_Teste_trinca/teste')
         self.output_path_edit.setReadOnly(True)
         
         self.layout().addWidget(self.output_label)

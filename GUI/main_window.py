@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QMainWindow, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSlot
 
 from GUI.main_widget import MainWidget
-from Core.ai_processing_worker import AIProcessingWorker # <-- MUDANÇA AQUI
+from Core.processing_worker import ProcessingWorker # <-- MUDANÇA AQUI
 
 class MainWindow(QMainWindow):
     """
@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
 
         self._thread = QThread()
         # Instancia o novo worker de IA
-        self._worker = AIProcessingWorker(input_folder, output_folder) # <-- MUDANÇA AQUI
+        self._worker = ProcessingWorker(input_folder, output_folder) # <-- MUDANÇA AQUI
         self._worker.moveToThread(self._thread)
 
         # Conecta os sinais do worker aos slots da janela
