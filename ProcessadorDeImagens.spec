@@ -6,7 +6,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('best.onnx', '.'), # <-- Inclui o modelo ONNX
+        ('trincas.onnx', '.'),
+        ('panelas.onnx', '.'),
         ('Core/*.so', 'Core'),
         ('Core/*.pyd', 'Core')
     ],

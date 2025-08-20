@@ -1,76 +1,76 @@
 # GUI/main_widget.py
 
-from PyQt6 import QtWidgets as QtW
 from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QLineEdit, QFileDialog, QHBoxLayout, QCheckBox
 
-class MainWidget(QtW.QWidget):
-    """Interface do usuário, agora sem a barra de progresso."""
+class MainWidget(QWidget):
     start_requested = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
-        self.setLayout(QtW.QVBoxLayout())
-        
-        # --- Widgets de Input ---
-        self.input_label = QtW.QLabel("Pasta de Origem:")
-        self.select_input_button = QtW.QPushButton("Selecionar Pasta de Origem")
-        self.input_path_edit = QtW.QLineEdit('/mnt/ssd3/output_20m_teste_clahe')
-        self.input_path_edit.setReadOnly(True)
-        
-        self.layout().addWidget(self.input_label)
-        self.layout().addWidget(self.select_input_button)
-        self.layout().addWidget(self.input_path_edit)
-        
-        # --- Widgets de Output ---
-        self.output_label = QtW.QLabel("Pasta de Saída:")
-        self.select_output_button = QtW.QPushButton("Selecionar Pasta de Saída")
-        self.output_path_edit = QtW.QLineEdit('/home/servidor/Deletar_VICTOR_Teste_trinca/teste')
-        self.output_path_edit.setReadOnly(True)
-        
-        self.layout().addWidget(self.output_label)
-        self.layout().addWidget(self.select_output_button)
-        self.layout().addWidget(self.output_path_edit)
-        
-        # --- Separador e Ação ---
-        separator = QtW.QFrame()
-        separator.setFrameShape(QtW.QFrame.Shape.HLine)
-        separator.setFrameShadow(QtW.QFrame.Shadow.Sunken)
-        self.layout().addWidget(separator)
+        self.setWindowTitle("Processador de Imagens")
 
-        self.start_button = QtW.QPushButton("▶ Iniciar Processo")
-        self.start_button.setStyleSheet("font-size: 14px; padding: 8px;")
-        self.layout().addWidget(self.start_button)
-        
-        # --- Conexões internas ---
-        self.select_input_button.clicked.connect(self._open_input_directory_dialog)
-        self.select_output_button.clicked.connect(self._open_output_directory_dialog)
-        self.start_button.clicked.connect(self._on_start_button_clicked)
-        
-        self.layout().addStretch()
+        # Layout principal
+        layout = QVBoxLayout(self)
 
-    def _open_input_directory_dialog(self):
-        directory = QtW.QFileDialog.getExistingDirectory(self, "Selecione a pasta de origem")
-        if directory:
-            self.input_path_edit.setText(directory)
-            
-    def _open_output_directory_dialog(self):
-        directory = QtW.QFileDialog.getExistingDirectory(self, "Selecione a pasta de saída")
-        if directory:
-            self.output_path_edit.setText(directory)
+        # Seleção de pasta de entrada
+        layout.addWidget(QLabel("Selecione a pasta com as imagens de entrada:"))
+        self.input_folder_edit = QLineEdit('/mnt/arch/home/servidor/output_20m_teste_clahe2/')
+        self.input_folder_button = QPushButton("Procurar...")
+        self.input_folder_button.clicked.connect(self.select_input_folder)
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(self.input_folder_edit)
+        input_layout.addWidget(self.input_folder_button)
+        layout.addLayout(input_layout)
 
-    def _on_start_button_clicked(self):
-        """Valida os campos e emite o sinal para o orquestrador."""
-        input_folder = self.input_path_edit.text()
-        output_folder = self.output_path_edit.text()
-        
-        if not input_folder or not output_folder:
-            QtW.QMessageBox.warning(self, "Erro", "Por favor, selecione a pasta de origem e a de saída.")
-            return
-        
-        self.start_requested.emit(input_folder, output_folder)
+        # Seleção de pasta de saída
+        layout.addWidget(QLabel("Selecione a pasta para salvar os resultados:"))
+        self.output_folder_edit = QLineEdit('/home/servidor/Deletar_VICTOR_Teste_trinca/teste')
+        self.output_folder_button = QPushButton("Procurar...")
+        self.output_folder_button.clicked.connect(self.select_output_folder)
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(self.output_folder_edit)
+        output_layout.addWidget(self.output_folder_button)
+        layout.addLayout(output_layout)
+
+        # --- NOVO: Checkboxes para seleção de análise ---
+        layout.addWidget(QLabel("Selecione os tipos de análise:"))
+        self.cb_trincas = QCheckBox("Analisar Trincas")
+        self.cb_trincas.setChecked(True)
+        self.cb_panelas = QCheckBox("Analisar Panelas e Remendos")
+        self.cb_panelas.setChecked(True)
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.addWidget(self.cb_trincas)
+        checkbox_layout.addWidget(self.cb_panelas)
+        layout.addLayout(checkbox_layout)
+
+        # Botão de iniciar
+        self.start_button = QPushButton("Iniciar Processamento")
+        self.start_button.clicked.connect(self.on_start)
+        layout.addWidget(self.start_button)
+
+    def select_input_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Entrada")
+        if folder:
+            self.input_folder_edit.setText(folder)
+
+    def select_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Saída")
+        if folder:
+            self.output_folder_edit.setText(folder)
+
+    def on_start(self):
+        input_folder = self.input_folder_edit.text()
+        output_folder = self.output_folder_edit.text()
+        if input_folder and output_folder:
+            self.start_requested.emit(input_folder, output_folder)
+        else:
+            # Pode-se adicionar uma QMessageBox de aviso aqui
+            print("Por favor, selecione as pastas de entrada e saída.")
 
     def toggle_controls(self, is_enabled: bool):
-        """Habilita ou desabilita os controles de interação."""
+        self.input_folder_button.setEnabled(is_enabled)
+        self.output_folder_button.setEnabled(is_enabled)
         self.start_button.setEnabled(is_enabled)
-        self.select_input_button.setEnabled(is_enabled)
-        self.select_output_button.setEnabled(is_enabled)
+        self.cb_trincas.setEnabled(is_enabled)
+        self.cb_panelas.setEnabled(is_enabled)
